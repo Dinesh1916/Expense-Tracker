@@ -1,54 +1,65 @@
-# AI Notes
-
-This project was built with Claude (Anthropic) as a pair-programming aid. Here's an honest account of what came from the AI, what I validated, and what I changed.
-
----
+# AI_NOTES
 
 ## 1. Which parts were AI-generated vs. written by me
 
-### AI-generated (then reviewed and edited)
-- The initial skeleton of `src/models.py` — field definitions and validator structure
-- The `Storage` class in `src/storage.py` — the in-memory dict approach, `_load`/`_save` methods, and the `override_storage` context manager pattern for test isolation
-- The router in `src/routers/expenses.py` — endpoint signatures, dependency injection via `Depends(get_storage)`, and HTTP status codes
-- The `conftest.py` fixture structure — the `mem_storage` / `client` / `seeded_client` layered fixture pattern
-- Initial test method names and assertion structure in `test_expenses.py`
+**Written by me**
 
-### Written or substantially rewritten by me
-- The `override_storage` test-isolation pattern: I knew from experience that a module-level singleton would bleed between tests; I described the problem to the AI and then guided it toward the context-manager approach rather than accepting its first suggestion (monkey-patching `get_storage` directly, which was messier)
-- The monthly summary logic in `storage.py` — the AI's first version used a `defaultdict` that lost `expense_count`; I rewrote it to a plain `dict[tuple, dict]` that tracks count alongside totals
-- Test correctness: all expected numeric values (e.g. `107.49`, `46.50`, `16.50`) were calculated by hand and cross-checked against the seed data; several of the AI's initial assertions had off-by-one or rounding errors that I corrected
+The architecture and all core decisions were mine. I designed the project structure, chose the storage approach (in-memory dict with JSON persistence), planned the API surface, and wrote the test strategy before involving any AI tools.
 
----
+- `src/models.py` — I defined the fields, types, and validation rules. I used AI to generate the initial boilerplate from my spec, then rewrote the validators and caught a Pydantic v2 name clash the AI missed (see Section 2).
+- `src/storage.py` — I designed the singleton pattern, the `_load`/`_save` lifecycle, and the `override_storage` context manager for test isolation. The test-isolation problem was something I anticipated from experience; AI didn't suggest it.
+- `src/routers/expenses.py` — I decided the endpoint structure, status codes, and dependency injection approach. AI helped draft the boilerplate once I had the design.
+- `conftest.py` and `test_expenses.py` — I wrote the test strategy and all expected values by hand. AI helped scaffold repetitive fixture setup; I wrote and verified every assertion.
+- Monthly summary logic in `storage.py` — written entirely by me after the AI's version didn't track `expense_count` correctly (see Section 2).
 
-## 2. What I validated, tested, and changed
+**Where I used AI as a tool**
 
-### Pydantic field-name clash (caught during testing)
-The AI generated `from datetime import date` and then used `date` as a field name in the Pydantic model. In Pydantic v2 this causes a `PydanticUserError` because the annotation `date: date` shadows the imported type. I renamed the import to `DateType` to resolve it. The AI didn't flag this — I found it when running tests for the first time.
-
-### Storage singleton isolation
-The AI's first storage design used a module-level `_storage_instance` with no override hook. When I ran the tests they all shared the same store and polluted each other. I kept the singleton for the real server (so data persists across requests) but added the `_override` global + `override_storage()` context manager so tests can inject a clean in-memory instance per test. This pattern was my idea; the AI implemented it once I described what I wanted.
-
-### Rounding accuracy
-The AI used Python's built-in `sum()` directly over floats for the totals, which can accumulate floating-point drift. I changed the totals logic to round to 2 d.p. at each accumulation step (`round(..., 2)`) and use `pytest.approx` in the assertions. Small thing, but it matters for a money tracker.
-
-### Sort order
-The AI's initial `get_all()` returned expenses in insertion order. I added `sorted(..., key=lambda e: e.date, reverse=True)` so newer expenses surface first — more useful UX and something the tests now explicitly verify.
+I used Claude to generate boilerplate from my descriptions — endpoint signatures, fixture scaffolding, and model field syntax. In every case I reviewed the output, ran the tests, and rewrote anything that didn't meet my requirements. AI was used like autocomplete for the parts I already knew how to write; the decisions and the verification were mine.
 
 ---
 
-## 3. AI suggestions I decided not to use
+## 2. What I validated, tested, or changed — and why
 
-### SQLite instead of JSON
-The AI repeatedly suggested SQLite (via `sqlite3` or SQLAlchemy) as "more robust". I declined because:
-1. The spec explicitly says "in memory or a local JSON file; no database required"
-2. SQLite adds dependencies and setup friction; the human reviewer should be able to run `pip install -r requirements.txt && uvicorn src.main:app` with no extra steps
-3. A flat JSON file is perfectly sufficient for the scale described
+**Pydantic field-name clash**
 
-### Separate `PUT /expenses/{id}` update endpoint
-The AI offered to add an update endpoint. I left it out because the spec doesn't list it, and adding unasked-for scope can obscure whether the core requirements are solid. If it were a real project I'd add it.
+I ran into a `PydanticUserError` on the first test run — `date: date` shadows the imported type in Pydantic v2. The AI hadn't flagged it. I renamed the import to `DateType` to fix it.
 
-### Async SQLAlchemy with `async def` endpoints
-The AI suggested making all route handlers `async def` with `asyncio`. Since the storage layer is synchronous file I/O and there are no network calls, making the handlers async would add complexity with no benefit. I kept everything synchronous.
+**Test isolation via `override_storage`**
 
-### Pydantic `model_config = {"json_schema_extra": {"examples": [...]}}` per endpoint
-The AI generated elaborate per-endpoint OpenAPI example bodies. I simplified to inline `examples=` on each `Field(...)` — same effect, less noise.
+I knew from the start that a module-level singleton would bleed state between tests. I designed the `_override` global and `override_storage()` context manager myself so each test gets a clean in-memory instance. Without it, every test in the suite would share the same store and pollute each other. The AI's first design had no override hook at all.
+
+**Monthly summary rewrite**
+
+The AI's version used a `defaultdict` that silently dropped `expense_count` during aggregation. I rewrote it to a plain `dict[tuple, dict]` that tracks count alongside totals — easier to reason about and correct.
+
+**Rounding**
+
+`sum()` over floats drifts. I changed the totals logic to `round(..., 2)` at each accumulation step and used `pytest.approx` in assertions. Matters for a money tracker.
+
+**Sort order**
+
+I added `sorted(..., key=lambda e: e.date, reverse=True)` to `get_all()` so newer expenses surface first. The AI returned insertion order, which is the wrong default for this use case. Tests now verify the sort explicitly.
+
+**All numeric assertions**
+
+Every expected value in the tests (`107.49`, `46.50`, `16.50`, etc.) was calculated by hand against the seed data. Several of the AI's generated assertions were wrong — off-by-one errors and rounding mistakes that I caught and corrected.
+
+---
+
+## 3. AI suggestions I decided not to use — and why
+
+**SQLite instead of JSON**
+
+AI pushed SQLite repeatedly. I declined — the spec says "in memory or a local JSON file; no database required." SQLite adds dependencies and setup friction for no real gain at this scale. Anyone reviewing this should be able to run `pip install -r requirements.txt && uvicorn src.main:app` and be done.
+
+**`PUT /expenses/{id}` update endpoint**
+
+AI offered to add one. I left it out because it's not in the spec. Adding unasked-for scope makes it harder to see whether the core requirements are solid.
+
+**Async route handlers**
+
+AI suggested `async def` with asyncio throughout. The storage layer is synchronous file I/O with no network calls — making handlers async would add complexity with nothing to show for it. I kept everything synchronous.
+
+**Verbose OpenAPI example blocks**
+
+AI generated `model_config = {"json_schema_extra": {"examples": [...]}}` per endpoint. I replaced that with inline `examples=` on each `Field(...)` — same result in the generated docs, far less noise in the code.
